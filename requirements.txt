@@ -1,2 +1,6 @@
-pygame>=2.6.0
-O
+pygame>=2.5
+
+# development: tests, the web build and the demo GIF
+pytest>=8
+pygbag>=0.9
+pillow>=10

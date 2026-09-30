@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import random
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
@@ -21,19 +23,25 @@ BASE_MOVE_MS = 145
 MIN_MOVE_MS = 70
 SPEEDUP_PER_FOOD_MS = 4
 
-BACKGROUND = (9, 14, 25)
-HEADER = (13, 22, 38)
-BOARD = (11, 18, 32)
-GRID = (22, 34, 54)
-SNAKE_HEAD = (110, 231, 183)
-SNAKE_BODY = (45, 188, 143)
-SNAKE_BODY_ALT = (38, 164, 128)
-FOOD = (255, 111, 97)
-FOOD_HIGHLIGHT = (255, 179, 148)
-TEXT = (226, 235, 245)
-MUTED_TEXT = (139, 154, 176)
-OVERLAY = (6, 10, 20, 188)
-ACCENT = (123, 211, 255)
+# Neon arcade palette
+BACKGROUND = (8, 6, 18)
+HEADER = (14, 10, 30)
+BOARD = (10, 8, 24)
+GRID = (26, 20, 52)
+SNAKE_HEAD = (170, 255, 120)
+SNAKE_BODY = (57, 255, 136)
+SNAKE_BODY_ALT = (0, 214, 110)
+FOOD = (255, 46, 151)
+FOOD_HIGHLIGHT = (255, 160, 214)
+TEXT = (240, 238, 255)
+MUTED_TEXT = (150, 140, 190)
+OVERLAY = (6, 4, 16, 200)
+ACCENT = (0, 229, 255)
+TITLE = (255, 230, 70)
+
+# Running in the browser (pygbag compiles the game to WebAssembly)
+WEB = sys.platform == "emscripten"
+SWIPE_MIN_PX = 24
 
 
 class GameState(Enum):
@@ -68,8 +76,11 @@ class SnakeGame:
         self.large_font = pygame.font.Font(None, 64)
         self.small_font = pygame.font.Font(None, 24)
         self.state = GameState.START
+        self.best = 0
+        self.touch_start: Optional[tuple[int, int]] = None
+        self.scanlines = self.make_scanlines()
         self.game_over_title = "GAME OVER"
-        self.game_over_subtitle = "Press Space or Enter to restart"
+        self.game_over_subtitle = "Press Space, Enter or tap to restart"
         self.reset()
 
     def reset(self) -> None:
@@ -86,7 +97,7 @@ class SnakeGame:
         self.move_delay_ms = BASE_MOVE_MS
         self.last_move_ms = pygame.time.get_ticks()
         self.game_over_title = "GAME OVER"
-        self.game_over_subtitle = "Press Space or Enter to restart"
+        self.game_over_subtitle = "Press Space, Enter or tap to restart"
 
     def spawn_food(self) -> Optional[Point]:
         occupied = set(self.snake)
@@ -100,7 +111,8 @@ class SnakeGame:
             return None
         return random.choice(empty_cells)
 
-    def run(self) -> None:
+    async def run(self) -> None:
+        """Main loop. Async so the browser gets control back every frame (pygbag)."""
         running = True
         while running:
             for event in pygame.event.get():
@@ -108,6 +120,11 @@ class SnakeGame:
                     running = False
                 elif event.type == pygame.KEYDOWN:
                     running = self.handle_key(event.key)
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    self.touch_start = event.pos
+                elif event.type == pygame.MOUSEBUTTONUP and self.touch_start:
+                    self.handle_swipe(self.touch_start, event.pos)
+                    self.touch_start = None
 
             if self.state == GameState.PLAYING:
                 self.update()
@@ -115,12 +132,23 @@ class SnakeGame:
             self.draw()
             pygame.display.flip()
             self.clock.tick(FPS)
+            await asyncio.sleep(0)
 
         pygame.quit()
 
+    def handle_swipe(self, start: tuple[int, int], end: tuple[int, int]) -> None:
+        """Touch and mouse: a tap starts or restarts, a swipe steers."""
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        if max(abs(dx), abs(dy)) < SWIPE_MIN_PX:
+            self.handle_key(pygame.K_SPACE)
+            return
+        direction = (RIGHT if dx > 0 else LEFT) if abs(dx) > abs(dy) else (DOWN if dy > 0 else UP)
+        key = {UP: pygame.K_UP, DOWN: pygame.K_DOWN, LEFT: pygame.K_LEFT, RIGHT: pygame.K_RIGHT}[direction]
+        self.handle_key(key)
+
     def handle_key(self, key: int) -> bool:
         if key == pygame.K_ESCAPE:
-            return False
+            return WEB  # a web page cannot be quit; on desktop Esc exits
 
         if key in (pygame.K_RETURN, pygame.K_SPACE):
             if self.state in (GameState.START, GameState.GAME_OVER):
@@ -167,6 +195,7 @@ class SnakeGame:
         new_head = self.snake[0] + self.direction
 
         if self.hit_wall(new_head) or self.hit_self(new_head):
+            self.best = max(self.best, self.score)
             self.state = GameState.GAME_OVER
             return
 
@@ -202,17 +231,30 @@ class SnakeGame:
         self.draw_snake()
 
         if self.state == GameState.START:
-            self.draw_overlay("SNAKE", "Press Space or Enter to start")
+            self.draw_overlay("SNAKE", "Press Space, Enter or tap to start")
         elif self.state == GameState.PAUSED:
             self.draw_overlay("PAUSED", "Press P to resume")
         elif self.state == GameState.GAME_OVER:
             self.draw_overlay(self.game_over_title, self.game_over_subtitle)
 
+        self.screen.blit(self.scanlines, (0, 0))
+
+    @staticmethod
+    def make_scanlines() -> pygame.Surface:
+        """A faint CRT scanline overlay, drawn once and reused every frame."""
+        lines = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        for y in range(0, WINDOW_HEIGHT, 3):
+            pygame.draw.line(lines, (0, 0, 0, 55), (0, y), (WINDOW_WIDTH, y))
+        return lines
+
     def draw_header(self) -> None:
         pygame.draw.rect(self.screen, HEADER, (0, 0, WINDOW_WIDTH, HEADER_HEIGHT))
         score_surface = self.font.render(f"Score: {self.score}", True, TEXT)
-        speed_surface = self.font.render(f"Speed: {self.current_speed_label()}", True, MUTED_TEXT)
-        help_surface = self.small_font.render("Arrows/WASD to move  P to pause  Esc to quit", True, MUTED_TEXT)
+        speed_surface = self.font.render(
+            f"Speed: {self.current_speed_label()}    Best: {max(self.best, self.score)}", True, MUTED_TEXT
+        )
+        controls = "Arrows/WASD or swipe  P to pause" if WEB else "Arrows/WASD to move  P to pause  Esc to quit"
+        help_surface = self.small_font.render(controls, True, MUTED_TEXT)
 
         self.screen.blit(score_surface, (24, 15))
         self.screen.blit(speed_surface, (24, 42))
@@ -251,10 +293,10 @@ class SnakeGame:
             color = SNAKE_HEAD if real_index == 0 else (
                 SNAKE_BODY if real_index % 2 == 0 else SNAKE_BODY_ALT
             )
-            pygame.draw.rect(self.screen, color, rect, border_radius=6)
+            pygame.draw.rect(self.screen, color, rect, border_radius=2)
 
-        head_rect = self.cell_rect(self.snake[0]).inflate(-8, -8)
-        pygame.draw.rect(self.screen, (206, 255, 235), head_rect, border_radius=4)
+        head_rect = self.cell_rect(self.snake[0]).inflate(-10, -10)
+        pygame.draw.rect(self.screen, BACKGROUND, head_rect)
 
     @staticmethod
     def cell_rect(point: Point) -> pygame.Rect:
@@ -270,7 +312,7 @@ class SnakeGame:
         overlay.fill(OVERLAY)
         self.screen.blit(overlay, (0, HEADER_HEIGHT))
 
-        title_surface = self.large_font.render(title, True, TEXT)
+        title_surface = self.large_font.render(title, True, TITLE)
         subtitle_surface = self.font.render(subtitle, True, MUTED_TEXT)
         hint_surface = self.small_font.render("Eat food, grow longer, and avoid the walls.", True, MUTED_TEXT)
 
@@ -289,9 +331,9 @@ class SnakeGame:
         )
 
 
-def main() -> None:
-    SnakeGame().run()
+async def main() -> None:
+    await SnakeGame().run()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
