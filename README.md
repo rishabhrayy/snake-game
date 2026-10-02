@@ -2,7 +2,7 @@
 
 Classic Snake in Python and Pygame, with a neon arcade look - and the same code runs in your browser, compiled to WebAssembly.
 
-**[Play it in your browser](https://rishabhray-snake.vercel.app)** - arrows, WASD, or swipe on a phone.
+**[Play it in your browser](https://snake.rishabhray.me)** - arrows, WASD, or swipe on a phone.
 
 ![Snake gameplay, played by the built-in autopilot](assets/demo.gif)
 

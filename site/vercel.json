@@ -17,7 +17,7 @@
       "has": [
         {
           "type": "host",
-          "value": "rishabhray-snake.vercel.app"
+          "value": "snake.rishabhray.me"
         }
       ],
       "destination": "https://snake.rishabhray.me/",
@@ -28,7 +28,7 @@
       "has": [
         {
           "type": "host",
-          "value": "rishabhray-snake.vercel.app"
+          "value": "snake.rishabhray.me"
         }
       ],
       "destination": "https://snake.rishabhray.me/:path+",
