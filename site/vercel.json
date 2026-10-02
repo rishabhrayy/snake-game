@@ -1,6 +1,38 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "headers": [
-    { "source": "/game/(.*)", "headers": [{ "key": "Cross-Origin-Resource-Policy", "value": "cross-origin" }] }
+    {
+      "source": "/game/(.*)",
+      "headers": [
+        {
+          "key": "Cross-Origin-Resource-Policy",
+          "value": "cross-origin"
+        }
+      ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/",
+      "has": [
+        {
+          "type": "host",
+          "value": "rishabhray-snake.vercel.app"
+        }
+      ],
+      "destination": "https://snake.rishabhray.me/",
+      "permanent": true
+    },
+    {
+      "source": "/:path+",
+      "has": [
+        {
+          "type": "host",
+          "value": "rishabhray-snake.vercel.app"
+        }
+      ],
+      "destination": "https://snake.rishabhray.me/:path+",
+      "permanent": true
+    }
   ]
 }
