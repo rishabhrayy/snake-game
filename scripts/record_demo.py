@@ -16,8 +16,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import pygame  # noqa: E402
 from PIL import Image  # noqa: E402
 
-import main  # noqa: E402
-from main import DOWN, LEFT, RIGHT, UP, GameState, SnakeGame  # noqa: E402
+from main import DOWN, LEFT, RIGHT, UP, GameState, Scores, SnakeGame  # noqa: E402
 
 KEYS = {UP: pygame.K_UP, DOWN: pygame.K_DOWN, LEFT: pygame.K_LEFT, RIGHT: pygame.K_RIGHT}
 
@@ -51,7 +50,7 @@ def frame(g: SnakeGame) -> Image.Image:
 
 def main_() -> None:
     random.seed(7)
-    g = SnakeGame()
+    g = SnakeGame(Scores(path=None))  # the recording never touches your saved best
     frames = [frame(g)] * 12  # title screen
     g.handle_key(pygame.K_SPACE)
     for _ in range(260):

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import sys
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from pathlib import Path
 
 import pygame
-
 
 CELL_SIZE = 24
 GRID_WIDTH = 28
@@ -42,6 +42,51 @@ TITLE = (255, 230, 70)
 # Running in the browser (pygbag compiles the game to WebAssembly)
 WEB = sys.platform == "emscripten"
 SWIPE_MIN_PX = 24
+# Turns pressed faster than the snake moves are queued, so a quick "up, left" is never lost
+MAX_QUEUED_TURNS = 2
+SAVE_PATH = Path.home() / ".snake-best.json"
+MODES = ("classic", "wrap")
+
+
+class Scores:
+    """Best score per mode, kept between sessions: a JSON file on desktop, localStorage on the web."""
+
+    KEY = "snake-best"
+
+    def __init__(self, path: Path | None = SAVE_PATH) -> None:
+        self.path = path
+        self.best = {mode: 0 for mode in MODES}
+        try:
+            saved = json.loads(self._read() or "{}")
+            self.best.update({m: int(v) for m, v in saved.items() if m in MODES})
+        except (ValueError, TypeError, OSError):
+            pass  # a corrupt or unreadable save just means starting from zero
+
+    def _read(self) -> str | None:
+        if WEB:
+            import platform  # pygbag's bridge to the browser
+
+            return platform.window.localStorage.getItem(self.KEY)
+        if self.path and self.path.exists():
+            return self.path.read_text(encoding="utf-8")
+        return None
+
+    def record(self, mode: str, score: int) -> bool:
+        """Store a score; returns True when it is a new best."""
+        if score <= self.best[mode]:
+            return False
+        self.best[mode] = score
+        data = json.dumps(self.best)
+        try:
+            if WEB:
+                import platform
+
+                platform.window.localStorage.setItem(self.KEY, data)
+            elif self.path:
+                self.path.write_text(data, encoding="utf-8")
+        except OSError:
+            pass
+        return True
 
 
 class GameState(Enum):
@@ -56,7 +101,7 @@ class Point:
     x: int
     y: int
 
-    def __add__(self, other: "Point") -> "Point":
+    def __add__(self, other: Point) -> Point:
         return Point(self.x + other.x, self.y + other.y)
 
 
@@ -67,7 +112,7 @@ RIGHT = Point(1, 0)
 
 
 class SnakeGame:
-    def __init__(self) -> None:
+    def __init__(self, scores: Scores | None = None) -> None:
         pygame.init()
         pygame.display.set_caption("Snake")
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
@@ -76,8 +121,10 @@ class SnakeGame:
         self.large_font = pygame.font.Font(None, 64)
         self.small_font = pygame.font.Font(None, 24)
         self.state = GameState.START
-        self.best = 0
-        self.touch_start: Optional[tuple[int, int]] = None
+        self.scores = scores or Scores()
+        self.mode = MODES[0]
+        self.new_best = False
+        self.touch_start: tuple[int, int] | None = None
         self.scanlines = self.make_scanlines()
         self.game_over_title = "GAME OVER"
         self.game_over_subtitle = "Press Space, Enter or tap to restart"
@@ -91,15 +138,16 @@ class SnakeGame:
             Point(center.x - 2, center.y),
         ]
         self.direction = RIGHT
-        self.pending_direction = RIGHT
+        self.turns: list[Point] = []
         self.food = self.spawn_food()
         self.score = 0
+        self.new_best = False
         self.move_delay_ms = BASE_MOVE_MS
         self.last_move_ms = pygame.time.get_ticks()
         self.game_over_title = "GAME OVER"
         self.game_over_subtitle = "Press Space, Enter or tap to restart"
 
-    def spawn_food(self) -> Optional[Point]:
+    def spawn_food(self) -> Point | None:
         occupied = set(self.snake)
         empty_cells = [
             Point(x, y)
@@ -142,6 +190,9 @@ class SnakeGame:
         if max(abs(dx), abs(dy)) < SWIPE_MIN_PX:
             self.handle_key(pygame.K_SPACE)
             return
+        if self.state != GameState.PLAYING and abs(dx) > abs(dy):
+            self.handle_key(pygame.K_m)  # phones have no M key: swipe sideways between games instead
+            return
         direction = (RIGHT if dx > 0 else LEFT) if abs(dx) > abs(dy) else (DOWN if dy > 0 else UP)
         key = {UP: pygame.K_UP, DOWN: pygame.K_DOWN, LEFT: pygame.K_LEFT, RIGHT: pygame.K_RIGHT}[direction]
         self.handle_key(key)
@@ -154,6 +205,10 @@ class SnakeGame:
             if self.state in (GameState.START, GameState.GAME_OVER):
                 self.reset()
                 self.state = GameState.PLAYING
+            return True
+
+        if key == pygame.K_m and self.state in (GameState.START, GameState.GAME_OVER):
+            self.mode = MODES[(MODES.index(self.mode) + 1) % len(MODES)]
             return True
 
         if key == pygame.K_p:
@@ -176,10 +231,21 @@ class SnakeGame:
         }.get(key)
 
         if requested and self.state == GameState.PLAYING:
-            if not self.is_opposite(requested, self.direction):
-                self.pending_direction = requested
+            # judge each turn against the last queued one, not the current heading
+            last = self.turns[-1] if self.turns else self.direction
+            if requested != last and not self.is_opposite(requested, last) and len(self.turns) < MAX_QUEUED_TURNS:
+                self.turns.append(requested)
 
         return True
+
+    @property
+    def pending_direction(self) -> Point:
+        """The heading the snake will take on its next move."""
+        return self.turns[0] if self.turns else self.direction
+
+    @property
+    def best(self) -> int:
+        return self.scores.best[self.mode]
 
     @staticmethod
     def is_opposite(first: Point, second: Point) -> bool:
@@ -191,12 +257,14 @@ class SnakeGame:
             return
 
         self.last_move_ms = now
-        self.direction = self.pending_direction
+        if self.turns:
+            self.direction = self.turns.pop(0)
         new_head = self.snake[0] + self.direction
+        if self.mode == "wrap":
+            new_head = Point(new_head.x % GRID_WIDTH, new_head.y % GRID_HEIGHT)
 
         if self.hit_wall(new_head) or self.hit_self(new_head):
-            self.best = max(self.best, self.score)
-            self.state = GameState.GAME_OVER
+            self.end_game()
             return
 
         self.snake.insert(0, new_head)
@@ -211,9 +279,15 @@ class SnakeGame:
             if self.food is None:
                 self.game_over_title = "YOU WIN"
                 self.game_over_subtitle = "Press Space or Enter to play again"
-                self.state = GameState.GAME_OVER
+                self.end_game()
         else:
             self.snake.pop()
+
+    def end_game(self) -> None:
+        self.new_best = self.scores.record(self.mode, self.score)
+        if self.new_best and self.game_over_title == "GAME OVER":
+            self.game_over_title = "NEW BEST"
+        self.state = GameState.GAME_OVER
 
     @staticmethod
     def hit_wall(point: Point) -> bool:
@@ -251,7 +325,9 @@ class SnakeGame:
         pygame.draw.rect(self.screen, HEADER, (0, 0, WINDOW_WIDTH, HEADER_HEIGHT))
         score_surface = self.font.render(f"Score: {self.score}", True, TEXT)
         speed_surface = self.font.render(
-            f"Speed: {self.current_speed_label()}    Best: {max(self.best, self.score)}", True, MUTED_TEXT
+            f"Speed: {self.current_speed_label()}    Best: {max(self.best, self.score)}    Mode: {self.mode.title()}",
+            True,
+            MUTED_TEXT,
         )
         controls = "Arrows/WASD or swipe  P to pause" if WEB else "Arrows/WASD to move  P to pause  Esc to quit"
         help_surface = self.small_font.render(controls, True, MUTED_TEXT)
@@ -314,7 +390,14 @@ class SnakeGame:
 
         title_surface = self.large_font.render(title, True, TITLE)
         subtitle_surface = self.font.render(subtitle, True, MUTED_TEXT)
-        hint_surface = self.small_font.render("Eat food, grow longer, and avoid the walls.", True, MUTED_TEXT)
+        switch = "Swipe sideways or press M" if WEB else "Press M"
+        if self.state == GameState.PAUSED:
+            hint = "Eat food, grow longer, and avoid the walls."
+        elif self.mode == "wrap":
+            hint = f"Wrap mode: the walls wrap around. {switch} for Classic."
+        else:
+            hint = f"Classic mode: avoid the walls. {switch} for Wrap."
+        hint_surface = self.small_font.render(hint, True, MUTED_TEXT)
 
         center_y = HEADER_HEIGHT + BOARD_HEIGHT // 2
         self.screen.blit(
